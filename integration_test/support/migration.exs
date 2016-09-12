@@ -80,6 +80,7 @@ defmodule Ecto.Integration.Migration do
 
     create table(:orders) do
       add :item, :map
+      add :comment_id, references(:comments)
     end
 
     unless :array_type in ExUnit.configuration[:exclude] do
@@ -101,5 +102,7 @@ defmodule Ecto.Integration.Migration do
       add :user_id, references(:users), primary_key: true
       timestamps()
     end
+    
+    create unique_index(:posts_users_composite_pk, [:post_id, :user_id])
   end
 end

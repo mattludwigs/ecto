@@ -3,6 +3,7 @@ defmodule Ecto.Changeset.BelongsToTest do
 
   alias Ecto.Changeset
   alias Ecto.Changeset.Relation
+  alias Ecto.TestRepo
 
   alias __MODULE__.Author
   alias __MODULE__.Profile
@@ -16,6 +17,7 @@ defmodule Ecto.Changeset.BelongsToTest do
         on_replace: :delete, defaults: [name: "default"]
       belongs_to :raise_profile, Profile, on_replace: :raise
       belongs_to :invalid_profile, Profile, on_replace: :mark_as_invalid
+      belongs_to :update_profile, Profile, on_replace: :update
     end
   end
 
@@ -85,13 +87,19 @@ defmodule Ecto.Changeset.BelongsToTest do
     assert changeset.valid?
   end
 
-  test "cast belongs_to with nil" do
+  test "cast belongs_to with empty value" do
     assert cast(%Author{}, %{"profile" => nil}, :profile).changes == %{profile: nil}
     assert cast(%Author{profile: nil}, %{"profile" => nil}, :profile).changes == %{}
+
+    assert cast(%Author{}, %{"profile" => ""}, :profile).changes == %{}
+    assert cast(%Author{profile: nil}, %{"profile" => ""}, :profile).changes == %{}
 
     loaded = put_in %Author{}.__meta__.state, :loaded
     assert_raise RuntimeError, ~r"attempting to cast or change association `profile` .* that was not loaded", fn ->
       cast(loaded, %{"profile" => nil}, :profile)
+    end
+    assert_raise RuntimeError, ~r"attempting to cast or change association `profile` .* that was not loaded", fn ->
+      cast(loaded, %{"profile" => ""}, :profile)
     end
   end
 
@@ -247,6 +255,18 @@ defmodule Ecto.Changeset.BelongsToTest do
     refute changeset.valid?
   end
 
+  test "cast belongs_to with on_replace: :update" do
+    {:ok, schema} = TestRepo.insert(%Author{title: "Title",
+      update_profile: %Profile{id: 1, name: "Enio"}})
+
+    changeset = cast(schema, %{"update_profile" => %{id: 2, name: "Jose"}}, :update_profile)
+    assert changeset.changes.update_profile.changes == %{name: "Jose", id: 2}
+    assert changeset.changes.update_profile.action == :update
+    assert changeset.errors == []
+    assert changeset.valid?
+  end
+
+
   test "cast belongs_to twice" do
     schema = %Author{}
     params = %{profile: %{name: "Bruce Wayne", id: 1}}
@@ -313,6 +333,18 @@ defmodule Ecto.Changeset.BelongsToTest do
       Relation.change(assoc, [name: "michal"], profile)
     assert changeset.action == :update
     assert changeset.changes == %{name: "michal"}
+
+    profile = %Profile{name: "other"}
+
+    assert {:ok, changeset, true, false} =
+      Relation.change(assoc, %{name: "michal"}, profile)
+    assert changeset.action == :insert
+    assert changeset.changes == %{name: "michal"}
+
+    assert {:ok, changeset, true, false} =
+      Relation.change(assoc, [name: "michal"], profile)
+    assert changeset.action == :insert
+    assert changeset.changes == %{name: "michal"}
   end
 
   test "change belongs_to with struct" do
@@ -334,7 +366,7 @@ defmodule Ecto.Changeset.BelongsToTest do
 
   test "change belongs_to keeps appropriate action from changeset" do
     assoc = Author.__schema__(:association, :profile)
-    assoc_schema = %Profile{}
+    assoc_schema = %Profile{id: 1}
 
     # Adding
     changeset = %{Changeset.change(assoc_schema, name: "michal") | action: :insert}

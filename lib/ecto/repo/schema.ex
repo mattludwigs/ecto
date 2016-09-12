@@ -10,19 +10,26 @@ defmodule Ecto.Repo.Schema do
   Implementation for `Ecto.Repo.insert!/2`.
   """
   def insert_all(repo, adapter, schema, rows, opts) when is_atom(schema) do
-    do_insert_all(repo, adapter, schema,
-                  {schema.__schema__(:prefix), schema.__schema__(:source)}, rows, opts)
+    do_insert_all(repo, adapter, schema, schema.__schema__(:prefix),
+                  schema.__schema__(:source), rows, opts)
   end
 
   def insert_all(repo, adapter, table, rows, opts) when is_binary(table) do
-    do_insert_all(repo, adapter, nil, {nil, table}, rows, opts)
+    do_insert_all(repo, adapter, nil, nil, table, rows, opts)
   end
 
-  def insert_all(repo, adapter, {_prefix, _source} = table, rows, opts) do
-    do_insert_all(repo, adapter, nil, table, rows, opts)
+  # TODO: Support the :prefix option
+  def insert_all(repo, adapter, {prefix, source}, rows, opts) when is_binary(source) do
+    IO.puts :stderr, "warning: passing {prefix, source} to insert_all is deprecated, " <>
+                     "please pass the :prefix option instead\n" <> Exception.format_stacktrace
+    do_insert_all(repo, adapter, nil, prefix, source, rows, opts)
   end
 
-  defp do_insert_all(_repo, _adapter, _schema, _source, [], opts) do
+  def insert_all(repo, adapter, {source, schema}, rows, opts) when is_atom(schema) do
+    do_insert_all(repo, adapter, schema, schema.__schema__(:prefix), source, rows, opts)
+  end
+
+  defp do_insert_all(_repo, _adapter, _schema, _prefix, _source, [], opts) do
     if opts[:returning] do
       {0, []}
     else
@@ -30,9 +37,10 @@ defmodule Ecto.Repo.Schema do
     end
   end
 
-  defp do_insert_all(repo, adapter, schema, source, rows, opts) when is_list(rows) do
+  defp do_insert_all(repo, adapter, schema, prefix, source, rows, opts) when is_list(rows) do
     returning = opts[:returning] || false
     autogen   = schema && schema.__schema__(:autogenerate_id)
+    source    = {Keyword.get(opts, :prefix, prefix), source}
     fields    = preprocess(returning, schema)
     metadata  = %{source: source, context: nil, schema: schema, autogenerate_id: autogen}
 
@@ -173,24 +181,29 @@ defmodule Ecto.Repo.Schema do
       opts = Keyword.put(opts, :skip_transaction, true)
       user_changeset = run_prepare(changeset, prepare)
 
-      changeset = Ecto.Embedded.prepare(user_changeset, adapter, :insert)
-      {changeset, parents, children} = pop_assocs(changeset, assocs)
+      {changeset, parents, children} = pop_assocs(user_changeset, assocs)
       changeset = process_parents(changeset, parents, opts)
 
-      metadata = metadata(struct)
-      {changes, extra, return} = autogenerate_id(metadata, changeset.changes, return, adapter)
-      {changes, autogen} = dump_changes!(:insert, Map.take(changes, fields), schema, extra, types, adapter)
+      if changeset.valid? do
+        changeset = Ecto.Embedded.prepare(changeset, adapter, :insert)
 
-      args = [repo, metadata, changes, return, opts]
-      case apply(changeset, adapter, :insert, args) do
-        {:ok, values} ->
-          changeset
-          |> load_changes(:loaded, values ++ extra, autogen, adapter)
-          |> process_children(children, user_changeset, opts)
-        {:error, _} = error ->
-          error
-        {:invalid, constraints} ->
-          {:error, constraints_to_errors(user_changeset, :insert, constraints)}
+        metadata = metadata(struct, opts)
+        {changes, extra, return} = autogenerate_id(metadata, changeset.changes, return, adapter)
+        {changes, autogen} = dump_changes!(:insert, Map.take(changes, fields), schema, extra, types, adapter)
+
+        args = [repo, metadata, changes, return, opts]
+        case apply(changeset, adapter, :insert, args) do
+          {:ok, values} ->
+            changeset
+            |> load_changes(:loaded, values ++ extra, autogen, adapter)
+            |> process_children(children, user_changeset, opts)
+          {:error, _} = error ->
+            error
+          {:invalid, constraints} ->
+            {:error, constraints_to_errors(user_changeset, :insert, constraints)}
+        end
+      else
+        {:error, changeset}
       end
     end)
   end
@@ -231,32 +244,37 @@ defmodule Ecto.Repo.Schema do
         opts = Keyword.put(opts, :skip_transaction, true)
         user_changeset = run_prepare(changeset, prepare)
 
-        changeset = Ecto.Embedded.prepare(user_changeset, adapter, :update)
-        {changeset, parents, children} = pop_assocs(changeset, assocs)
+        {changeset, parents, children} = pop_assocs(user_changeset, assocs)
         changeset = process_parents(changeset, parents, opts)
 
-        original =  Map.take(changeset.changes, fields)
-        {changes, autogen} = dump_changes!(:update, original, schema, [], types, adapter)
+        if changeset.valid? do
+          changeset = Ecto.Embedded.prepare(changeset, adapter, :update)
 
-        filters = add_pk_filter!(changeset.filters, struct)
-        filters = dump_fields!(schema, :update, filters, types, adapter)
-        args    = [repo, metadata(struct), changes, filters, return, opts]
+          original =  Map.take(changeset.changes, fields)
+          {changes, autogen} = dump_changes!(:update, original, schema, [], types, adapter)
 
-        # If there are no changes or all the changes were autogenerated but not forced, we skip
-        {action, autogen} =
-          if original != %{} or (autogen != [] and force?),
-             do: {:update, autogen},
-             else: {:noop, []}
+          filters = add_pk_filter!(changeset.filters, struct)
+          filters = dump_fields!(schema, :update, filters, types, adapter)
+          args    = [repo, metadata(struct, opts), changes, filters, return, opts]
 
-        case apply(changeset, adapter, action, args) do
-          {:ok, values} ->
-            changeset
-            |> load_changes(:loaded, values, autogen, adapter)
-            |> process_children(children, user_changeset, opts)
-          {:error, _} = error ->
-            error
-          {:invalid, constraints} ->
-            {:error, constraints_to_errors(user_changeset, :update, constraints)}
+          # If there are no changes or all the changes were autogenerated but not forced, we skip
+          {action, autogen} =
+            if original != %{} or (autogen != [] and force?),
+               do: {:update, autogen},
+               else: {:noop, []}
+
+          case apply(changeset, adapter, action, args) do
+            {:ok, values} ->
+              changeset
+              |> load_changes(:loaded, values, autogen, adapter)
+              |> process_children(children, user_changeset, opts)
+            {:error, _} = error ->
+              error
+            {:invalid, constraints} ->
+              {:error, constraints_to_errors(user_changeset, :update, constraints)}
+          end
+        else
+          {:error, changeset}
         end
       end)
     else
@@ -327,7 +345,7 @@ defmodule Ecto.Repo.Schema do
       filters = dump_fields!(schema, :delete, filters, types, adapter)
 
       delete_assocs(changeset, repo, schema, assocs, opts)
-      args = [repo, metadata(struct), filters, opts]
+      args = [repo, metadata(struct, opts), filters, opts]
       case apply(changeset, adapter, :delete, args) do
         {:ok, values} ->
           {:ok, load_changes(changeset, :deleted, values, [], adapter).data}
@@ -366,9 +384,11 @@ defmodule Ecto.Repo.Schema do
     end)
   end
 
-  defp metadata(%{__struct__: schema, __meta__: %{context: context, source: source}}) do
-    %{schema: schema, context: context, source: source,
-      autogenerate_id: schema.__schema__(:autogenerate_id)}
+  defp metadata(%{__struct__: schema, __meta__: %{context: context, source: {prefix, source}}}, opts) do
+    %{autogenerate_id: schema.__schema__(:autogenerate_id),
+      context: context,
+      schema: schema, 
+      source: {Keyword.get(opts, :prefix, prefix), source}}
   end
 
   defp apply(%{valid?: false} = changeset, _adapter, _action, _args) do
@@ -393,7 +413,11 @@ defmodule Ecto.Repo.Schema do
       Enum.map constraints, fn {type, constraint} ->
         user_constraint =
           Enum.find(user_constraints, fn c ->
-            c.type == type and c.constraint == constraint
+            case {c.type, c.constraint,  c.match} do
+              {^type, ^constraint, :exact} -> true
+              {^type, cc, :suffix} -> String.ends_with?(constraint, cc)
+              _ -> false
+            end
           end)
 
         case user_constraint do

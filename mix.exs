@@ -1,13 +1,13 @@
 defmodule Ecto.Mixfile do
   use Mix.Project
 
-  @version "2.0.2"
+  @version "2.1.0-dev"
   @adapters [:pg, :mysql]
 
   def project do
     [app: :ecto,
      version: @version,
-     elixir: "~> 1.2",
+     elixir: "~> 1.3",
      deps: deps(),
      build_per_environment: false,
      consolidate_protocols: false,
@@ -29,7 +29,8 @@ defmodule Ecto.Mixfile do
      name: "Ecto",
      docs: [source_ref: "v#{@version}", main: "Ecto",
             canonical: "http://hexdocs.pm/ecto",
-            source_url: "https://github.com/elixir-ecto/ecto"]]
+            source_url: "https://github.com/elixir-ecto/ecto",
+            extras: ["guides/Getting Started.md"]]]
   end
 
   def application do
@@ -39,11 +40,11 @@ defmodule Ecto.Mixfile do
 
   defp deps do
     [{:poolboy, "~> 1.5"},
-     {:decimal, "~> 1.0"},
+     {:decimal, "~> 1.1.2 or ~> 1.2"},
 
      # Drivers
-     {:db_connection, "~> 1.0-rc.2", optional: true},
-     {:postgrex, "~> 0.11.2", optional: true},
+     {:db_connection, "~> 1.0-rc.4", optional: true},
+     {:postgrex, "~> 0.12.0", optional: true},
      {:mariaex, "~> 0.7.7", optional: true},
 
      # Optional

@@ -66,11 +66,11 @@ defmodule Ecto.Adapters.MySQLTest do
   end
 
   test "from with subquery" do
-    query = subquery("posts" |> select([r], {r.x, r.y})) |> select([r], r.x) |> normalize
-    assert SQL.all(query) == ~s{SELECT s0.`x` FROM (SELECT p0.`x`, p0.`y` FROM `posts` AS p0) AS s0}
+    query = subquery("posts" |> select([r], %{x: r.x, y: r.y})) |> select([r], r.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0.`x` FROM (SELECT p0.`x` AS `x`, p0.`y` AS `y` FROM `posts` AS p0) AS s0}
 
-    query = subquery("posts" |> select([r], {r.x, r.y})) |> select([r], r) |> normalize
-    assert SQL.all(query) == ~s{SELECT s0.`x`, s0.`y` FROM (SELECT p0.`x`, p0.`y` FROM `posts` AS p0) AS s0}
+    query = subquery("posts" |> select([r], %{x: r.x, z: r.y})) |> select([r], r) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0.`x`, s0.`z` FROM (SELECT p0.`x` AS `x`, p0.`y` AS `z` FROM `posts` AS p0) AS s0}
   end
 
   test "select" do
@@ -106,6 +106,11 @@ defmodule Ecto.Adapters.MySQLTest do
   test "where" do
     query = Schema |> where([r], r.x == 42) |> where([r], r.y != 43) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT s0.`x` FROM `schema` AS s0 WHERE (s0.`x` = 42) AND (s0.`y` != 43)}
+  end
+
+  test "or_where" do
+    query = Schema |> or_where([r], r.x == 42) |> or_where([r], r.y != 43) |> select([r], r.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0.`x` FROM `schema` AS s0 WHERE (s0.`x` = 42) OR (s0.`y` != 43)}
   end
 
   test "order by" do
@@ -252,6 +257,14 @@ defmodule Ecto.Adapters.MySQLTest do
     assert SQL.all(query) == ~s{SELECT s0.`y`, s0.`x` FROM `schema` AS s0 HAVING (s0.`x` = s0.`x`) AND (s0.`y` = s0.`y`)}
   end
 
+  test "or_having" do
+    query = Schema |> or_having([p], p.x == p.x) |> select([p], p.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0.`x` FROM `schema` AS s0 HAVING (s0.`x` = s0.`x`)}
+
+    query = Schema |> or_having([p], p.x == p.x) |> or_having([p], p.y == p.y) |> select([p], [p.y, p.x]) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0.`y`, s0.`x` FROM `schema` AS s0 HAVING (s0.`x` = s0.`x`) OR (s0.`y` = s0.`y`)}
+  end
+
   test "group by" do
     query = Schema |> group_by([r], r.x) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT s0.`x` FROM `schema` AS s0 GROUP BY s0.`x`}
@@ -379,17 +392,17 @@ defmodule Ecto.Adapters.MySQLTest do
   end
 
   test "join with subquery" do
-    posts = subquery("posts" |> where(title: ^"hello") |> select([r], {r.x, r.y}))
-
+    posts = subquery("posts" |> where(title: ^"hello") |> select([r], %{x: r.x, y: r.y}))
     query = "comments" |> join(:inner, [c], p in subquery(posts), true) |> select([_, p], p.x) |> normalize
     assert SQL.all(query) ==
            ~s{SELECT s1.`x` FROM `comments` AS c0 } <>
-           ~s{INNER JOIN (SELECT p0.`x`, p0.`y` FROM `posts` AS p0 WHERE (p0.`title` = ?)) AS s1 ON TRUE}
+           ~s{INNER JOIN (SELECT p0.`x` AS `x`, p0.`y` AS `y` FROM `posts` AS p0 WHERE (p0.`title` = ?)) AS s1 ON TRUE}
 
+    posts = subquery("posts" |> where(title: ^"hello") |> select([r], %{x: r.x, z: r.y}))
     query = "comments" |> join(:inner, [c], p in subquery(posts), true) |> select([_, p], p) |> normalize
     assert SQL.all(query) ==
-           ~s{SELECT s1.`x`, s1.`y` FROM `comments` AS c0 } <>
-           ~s{INNER JOIN (SELECT p0.`x`, p0.`y` FROM `posts` AS p0 WHERE (p0.`title` = ?)) AS s1 ON TRUE}
+           ~s{SELECT s1.`x`, s1.`z` FROM `comments` AS c0 } <>
+           ~s{INNER JOIN (SELECT p0.`x` AS `x`, p0.`y` AS `z` FROM `posts` AS p0 WHERE (p0.`title` = ?)) AS s1 ON TRUE}
   end
 
   test "join with prefix" do
@@ -501,6 +514,14 @@ defmodule Ecto.Adapters.MySQLTest do
     `price` numeric(8,2) DEFAULT expr,
     `on_hand` integer DEFAULT 0 NULL,
     `is_active` boolean DEFAULT true) ENGINE = INNODB
+    """ |> remove_newlines
+  end
+
+  test "create empty table" do
+    create = {:create, table(:posts), []}
+
+    assert SQL.execute_ddl(create) == """
+    CREATE TABLE `posts` ENGINE = INNODB
     """ |> remove_newlines
   end
 
@@ -616,14 +637,25 @@ defmodule Ecto.Adapters.MySQLTest do
     """ |> remove_newlines
   end
 
+  test "alter table with primary key" do
+    alter = {:alter, table(:posts),
+               [{:add, :my_pk, :serial, [primary_key: true]}]}
+
+    assert SQL.execute_ddl(alter) == """
+    ALTER TABLE `posts`
+    ADD `my_pk` serial,
+    ADD PRIMARY KEY (`my_pk`)
+    """ |> remove_newlines
+  end
+
   test "create index" do
     create = {:create, index(:posts, [:category_id, :permalink])}
     assert SQL.execute_ddl(create) ==
            ~s|CREATE INDEX `posts_category_id_permalink_index` ON `posts` (`category_id`, `permalink`)|
 
-    create = {:create, index(:posts, ["lower(permalink)"], name: "posts$main")}
+    create = {:create, index(:posts, ["permalink(8)"], name: "posts$main")}
     assert SQL.execute_ddl(create) ==
-           ~s|CREATE INDEX `posts$main` ON `posts` (`lower(permalink)`)|
+           ~s|CREATE INDEX `posts$main` ON `posts` (permalink(8))|
   end
 
   test "create index with prefix" do
@@ -633,9 +665,9 @@ defmodule Ecto.Adapters.MySQLTest do
   end
 
   test "create index asserting concurrency" do
-    create = {:create, index(:posts, ["lower(permalink)"], name: "posts$main", concurrently: true)}
+    create = {:create, index(:posts, ["permalink(8)"], name: "posts$main", concurrently: true)}
     assert SQL.execute_ddl(create) ==
-           ~s|CREATE INDEX `posts$main` ON `posts` (`lower(permalink)`) LOCK=NONE|
+           ~s|CREATE INDEX `posts$main` ON `posts` (permalink(8)) LOCK=NONE|
   end
 
   test "create unique index" do

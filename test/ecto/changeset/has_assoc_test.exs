@@ -3,6 +3,7 @@ defmodule Ecto.Changeset.HasAssocTest do
 
   alias Ecto.Changeset
   alias Ecto.Changeset.Relation
+  alias Ecto.TestRepo
 
   alias __MODULE__.Author
   alias __MODULE__.Post
@@ -41,6 +42,7 @@ defmodule Ecto.Changeset.HasAssocTest do
       has_one :raise_profile, Profile, on_replace: :raise
       has_one :nilify_profile, Profile, on_replace: :nilify
       has_one :invalid_profile, Profile, on_replace: :mark_as_invalid
+      has_one :update_profile, Profile, on_replace: :update
     end
   end
 
@@ -110,13 +112,19 @@ defmodule Ecto.Changeset.HasAssocTest do
     assert changeset.valid?
   end
 
-  test "cast has_one with nil" do
+  test "cast has_one with empty value" do
     assert cast(%Author{}, %{"profile" => nil}, :profile).changes == %{profile: nil}
     assert cast(%Author{profile: nil}, %{"profile" => nil}, :profile).changes == %{}
+
+    assert cast(%Author{}, %{"profile" => ""}, :profile).changes == %{}
+    assert cast(%Author{profile: nil}, %{"profile" => ""}, :profile).changes == %{}
 
     loaded = put_in %Author{}.__meta__.state, :loaded
     assert_raise RuntimeError, ~r"attempting to cast or change association `profile` .* that was not loaded", fn ->
       cast(loaded, %{"profile" => nil}, :profile)
+    end
+    assert_raise RuntimeError, ~r"attempting to cast or change association `profile` .* that was not loaded", fn ->
+      cast(loaded, %{"profile" => ""}, :profile)
     end
   end
 
@@ -283,6 +291,31 @@ defmodule Ecto.Changeset.HasAssocTest do
     assert changeset.changes == %{}
     assert changeset.errors == [invalid_profile: {"a custom message", [type: :map]}]
     refute changeset.valid?
+  end
+
+  test "cast has_one with on_replace: :update" do
+    {:ok, schema} = TestRepo.insert(%Author{title: "Title",
+      update_profile: %Profile{id: 1, name: "Enio"}})
+
+    changeset = cast(schema, %{"update_profile" => %{id: 2, name: "Jose"}}, :update_profile)
+    assert changeset.changes.update_profile.changes == %{name: "Jose", id: 2}
+    assert changeset.changes.update_profile.action == :update
+    assert changeset.errors == []
+    assert changeset.valid?
+  end
+
+  test "raises when :update is used on has_many" do
+    error_message = "invalid `:on_replace` option for :tags. The only valid " <>
+      "options are: `:raise`, `:mark_as_invalid`, `:delete`, `:nilify`"
+    assert_raise ArgumentError, error_message, fn ->
+      defmodule Topic do
+        use Ecto.Schema
+
+        schema "topics" do
+          has_many :tags, Tag, on_replace: :update
+        end
+      end
+    end
   end
 
   test "cast has_one twice" do
@@ -524,6 +557,18 @@ defmodule Ecto.Changeset.HasAssocTest do
       Relation.change(assoc, [name: "michal"], profile)
     assert changeset.action == :update
     assert changeset.changes == %{name: "michal"}
+
+    profile = %Profile{name: "other"}
+
+    assert {:ok, changeset, true, false} =
+      Relation.change(assoc, %{name: "michal"}, profile)
+    assert changeset.action == :insert
+    assert changeset.changes == %{name: "michal"}
+
+    assert {:ok, changeset, true, false} =
+      Relation.change(assoc, [name: "michal"], profile)
+    assert changeset.action == :insert
+    assert changeset.changes == %{name: "michal"}
   end
 
   test "change has_one with structs" do
@@ -552,7 +597,7 @@ defmodule Ecto.Changeset.HasAssocTest do
 
   test "change has_one keeps appropriate action from changeset" do
     assoc = Author.__schema__(:association, :profile)
-    assoc_schema = %Profile{}
+    assoc_schema = %Profile{id: 1}
 
     # Adding
     changeset = %{Changeset.change(assoc_schema, name: "michal") | action: :insert}
@@ -659,6 +704,18 @@ defmodule Ecto.Changeset.HasAssocTest do
     assert {:ok, [changeset], true, false} =
       Relation.change(assoc, [[title: "hello"]], [post])
     assert changeset.action == :update
+    assert changeset.changes == %{title: "hello"}
+
+    post = %Post{title: "other"}
+
+    assert {:ok, [changeset], true, false} =
+      Relation.change(assoc, [%{title: "hello"}], [post])
+    assert changeset.action == :insert
+    assert changeset.changes == %{title: "hello"}
+
+    assert {:ok, [changeset], true, false} =
+      Relation.change(assoc, [[title: "hello"]], [post])
+    assert changeset.action == :insert
     assert changeset.changes == %{title: "hello"}
   end
 

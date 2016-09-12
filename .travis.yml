@@ -1,6 +1,6 @@
 language: elixir
 elixir:
-  - 1.2.6
+  - 1.3.2
 otp_release:
   - 18.2
 addons:
@@ -13,13 +13,14 @@ env:
   - ELIXIR_ERL_OPTIONS="+T 9"
 install:
   - mix local.hex --force
+  - mix local.rebar --force
   - mix deps.get
-  - (cd examples/simple; mix deps.get)
+  - (cd examples/friends; mix deps.get)
 script:
   - mix test
   - ECTO_POOL=poolboy mix test.adapters
   - ECTO_POOL=sbroker mix test.adapters
-  - (cd examples/simple; mix test)
+  - (cd examples/friends; mix test)
 after_script:
   - mix deps.get --only docs
   - MIX_ENV=docs mix inch.report

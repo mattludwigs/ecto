@@ -9,16 +9,8 @@ if Code.ensure_loaded?(Mariaex) do
     ## Connection
 
     def child_spec(opts) do
-      opts =
-        opts
-        |> Keyword.update(:port, @default_port, &normalize_port/1)
-
       Mariaex.child_spec(opts)
     end
-
-    # TODO: Remove this on 2.1 (normalization should happen on the adapter)
-    defp normalize_port(port) when is_binary(port), do: String.to_integer(port)
-    defp normalize_port(port) when is_integer(port), do: port
 
     ## Query
 
@@ -79,9 +71,7 @@ if Code.ensure_loaded?(Mariaex) do
     ## Query
 
     alias Ecto.Query
-    alias Ecto.Query.SelectExpr
-    alias Ecto.Query.QueryExpr
-    alias Ecto.Query.JoinExpr
+    alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr}
 
     def all(query) do
       sources = create_names(query)
@@ -181,7 +171,7 @@ if Code.ensure_loaded?(Mariaex) do
 
     defp handle_call(fun, _arity), do: {:fun, Atom.to_string(fun)}
 
-    defp select(%Query{select: %SelectExpr{fields: fields}, distinct: distinct} = query,
+    defp select(%Query{select: %{fields: fields}, distinct: distinct} = query,
                 sources) do
       "SELECT " <>
         distinct(distinct, sources, query) <>
@@ -197,8 +187,14 @@ if Code.ensure_loaded?(Mariaex) do
 
     defp select([], _sources, _query),
       do: "TRUE"
-    defp select(fields, sources, query),
-      do: Enum.map_join(fields, ", ", &expr(&1, sources, query))
+    defp select(fields, sources, query) do
+      Enum.map_join(fields, ", ", fn
+        {key, value} ->
+          expr(value, sources, query) <> " AS " <> quote_name(key)
+        value ->
+          expr(value, sources, query)
+      end)
+    end
 
     defp from(%{from: from} = query, sources) do
       {from, name} = get_source(query, sources, 0, from)
@@ -297,12 +293,18 @@ if Code.ensure_loaded?(Mariaex) do
     defp lock(lock_clause), do: lock_clause
 
     defp boolean(_name, [], _sources, _query), do: []
-    defp boolean(name, query_exprs, sources, query) do
+    defp boolean(name, [%{expr: expr} | query_exprs], sources, query) do
       name <> " " <>
-        Enum.map_join(query_exprs, " AND ", fn
-          %QueryExpr{expr: expr} ->
-            "(" <> expr(expr, sources, query) <> ")"
+        Enum.reduce(query_exprs, paren_expr(expr, sources, query), fn
+          %BooleanExpr{expr: expr, op: :and}, acc ->
+            acc <> " AND " <> paren_expr(expr, sources, query)
+          %BooleanExpr{expr: expr, op: :or}, acc ->
+            acc <> " OR " <> paren_expr(expr, sources, query)
         end)
+    end
+
+    defp paren_expr(expr, sources, query) do
+      "(" <> expr(expr, sources, query) <> ")"
     end
 
     defp expr({:^, [], [_ix]}, _sources, _query) do
@@ -356,8 +358,8 @@ if Code.ensure_loaded?(Mariaex) do
       "NOT (" <> expr(expr, sources, query) <> ")"
     end
 
-    defp expr(%Ecto.SubQuery{query: query}, _sources, _query) do
-      all(query)
+    defp expr(%Ecto.SubQuery{query: query, fields: fields}, _sources, _query) do
+      query.select.fields |> put_in(fields) |> all()
     end
 
     defp expr({:fragment, _, [kw]}, _sources, query) when is_list(kw) or tuple_size(kw) == 3 do
@@ -454,7 +456,7 @@ if Code.ensure_loaded?(Mariaex) do
     end
 
     defp op_to_binary({op, _, [_, _]} = expr, sources, query) when op in @binary_ops do
-      "(" <> expr(expr, sources, query) <> ")"
+      paren_expr(expr, sources, query)
     end
 
     defp op_to_binary(expr, sources, query) do
@@ -487,15 +489,26 @@ if Code.ensure_loaded?(Mariaex) do
 
     alias Ecto.Migration.{Table, Index, Reference, Constraint}
 
+    defp wrap_in_parentheses(""), do: ""
+    defp wrap_in_parentheses(str), do: "(#{str})"
+
     def execute_ddl({command, %Table{} = table, columns}) when command in [:create, :create_if_not_exists] do
       engine  = engine_expr(table.engine)
       options = options_expr(table.options)
-      if_not_exists = if command == :create_if_not_exists, do: " IF NOT EXISTS", else: ""
-      pk_definition = pk_definition(columns)
+      if_not_exists = if command == :create_if_not_exists, do: "IF NOT EXISTS", else: ""
 
-      "CREATE TABLE" <> if_not_exists <>
-        " #{quote_table(table.prefix, table.name)}" <>
-        " (#{column_definitions(table, columns)}#{pk_definition})" <> engine <> options
+      table_structure = [column_definitions(table, columns), pk_definition(columns)]
+      |> assemble(", ")
+      |> wrap_in_parentheses
+
+      assemble([
+        "CREATE TABLE",
+        if_not_exists,
+        quote_table(table.prefix, table.name),
+        table_structure,
+        engine,
+        options
+      ])
     end
 
     def execute_ddl({command, %Table{} = table}) when command in [:drop, :drop_if_exists] do
@@ -505,7 +518,12 @@ if Code.ensure_loaded?(Mariaex) do
     end
 
     def execute_ddl({:alter, %Table{}=table, changes}) do
-      "ALTER TABLE #{quote_table(table.prefix, table.name)} #{column_changes(table, changes)}"
+      pk_definition = case pk_definition(changes) do
+        "" -> ""
+        pk -> ", ADD #{pk}"
+      end
+      "ALTER TABLE #{quote_table(table.prefix, table.name)} #{column_changes(table, changes)}" <>
+      "#{pk_definition}"
     end
 
     def execute_ddl({:create, %Index{}=index}) do
@@ -567,7 +585,7 @@ if Code.ensure_loaded?(Mariaex) do
 
       case pks do
         [] -> ""
-        _  -> ", PRIMARY KEY (" <> Enum.map_join(pks, ", ", &quote_name/1) <> ")"
+        _  -> "PRIMARY KEY (" <> Enum.map_join(pks, ", ", &quote_name/1) <> ")"
       end
     end
 
@@ -631,19 +649,20 @@ if Code.ensure_loaded?(Mariaex) do
     defp default_expr(:error),
       do: []
 
+    defp index_expr(literal) when is_binary(literal),
+      do: literal
     defp index_expr(literal), do: quote_name(literal)
 
-    defp engine_expr(nil),
-      do: " ENGINE = INNODB"
+    defp engine_expr(nil), do: engine_expr("INNODB")
     defp engine_expr(storage_engine),
-      do: String.upcase(" ENGINE = #{storage_engine}")
+      do: String.upcase("ENGINE = #{storage_engine}")
 
     defp options_expr(nil),
       do: ""
     defp options_expr(keyword) when is_list(keyword),
       do: error!(nil, "MySQL adapter does not support keyword lists in :options")
     defp options_expr(options),
-      do: " #{options}"
+      do: "#{options}"
 
     defp column_type(type, opts) do
       size      = Keyword.get(opts, :size)
@@ -691,7 +710,7 @@ if Code.ensure_loaded?(Mariaex) do
 
     defp get_source(query, sources, ix, source) do
       {expr, name, _schema} = elem(sources, ix)
-      {expr || "(" <> expr(source, sources, query) <> ")", name}
+      {expr || paren_expr(source, sources, query), name}
     end
 
     defp quote_name(name)
@@ -717,10 +736,12 @@ if Code.ensure_loaded?(Mariaex) do
       <<?`, name::binary, ?`>>
     end
 
-    defp assemble(list) do
+    defp assemble(list), do: assemble(list, " ")
+    defp assemble(list, joiner) do
       list
       |> List.flatten
-      |> Enum.join(" ")
+      |> Enum.reject(fn(v)-> v == "" end)
+      |> Enum.join(joiner)
     end
 
     defp if_do(condition, value) do

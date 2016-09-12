@@ -69,11 +69,11 @@ defmodule Ecto.Adapters.PostgresTest do
   end
 
   test "from with subquery" do
-    query = subquery("posts" |> select([r], {r.x, r.y})) |> select([r], r.x) |> normalize
-    assert SQL.all(query) == ~s{SELECT s0."x" FROM (SELECT p0."x", p0."y" FROM "posts" AS p0) AS s0}
+    query = subquery("posts" |> select([r], %{x: r.x, y: r.y})) |> select([r], r.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0."x" FROM (SELECT p0."x" AS "x", p0."y" AS "y" FROM "posts" AS p0) AS s0}
 
-    query = subquery("posts" |> select([r], {r.x, r.y})) |> select([r], r) |> normalize
-    assert SQL.all(query) == ~s{SELECT s0."x", s0."y" FROM (SELECT p0."x", p0."y" FROM "posts" AS p0) AS s0}
+    query = subquery("posts" |> select([r], %{x: r.x, z: r.y})) |> select([r], r) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0."x", s0."z" FROM (SELECT p0."x" AS "x", p0."y" AS "z" FROM "posts" AS p0) AS s0}
   end
 
   test "select" do
@@ -99,6 +99,9 @@ defmodule Ecto.Adapters.PostgresTest do
     query = Schema |> distinct([r], r.x) |> select([r], {r.x, r.y}) |> normalize
     assert SQL.all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x", s0."y" FROM "schema" AS s0}
 
+    query = Schema |> distinct([r], desc: r.x) |> select([r], {r.x, r.y}) |> normalize
+    assert SQL.all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x", s0."y" FROM "schema" AS s0}
+
     query = Schema |> distinct([r], 2) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT DISTINCT ON (2) s0."x" FROM "schema" AS s0}
 
@@ -118,9 +121,19 @@ defmodule Ecto.Adapters.PostgresTest do
     assert SQL.all(query) == ~s{SELECT s0."x", s0."y" FROM "schema" AS s0}
   end
 
+  test "distinct with order by" do
+    query = Schema |> order_by([r], [r.y]) |> distinct([r], desc: r.x) |> select([r], r.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x" FROM "schema" AS s0 ORDER BY s0."x" DESC, s0."y"}
+  end
+
   test "where" do
     query = Schema |> where([r], r.x == 42) |> where([r], r.y != 43) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT s0."x" FROM "schema" AS s0 WHERE (s0."x" = 42) AND (s0."y" != 43)}
+  end
+
+  test "or_where" do
+    query = Schema |> or_where([r], r.x == 42) |> or_where([r], r.y != 43) |> select([r], r.x) |> normalize
+    assert SQL.all(query) == ~s{SELECT s0."x" FROM "schema" AS s0 WHERE (s0."x" = 42) OR (s0."y" != 43)}
   end
 
   test "order by" do
@@ -132,9 +145,6 @@ defmodule Ecto.Adapters.PostgresTest do
 
     query = Schema |> order_by([r], [asc: r.x, desc: r.y]) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT s0."x" FROM "schema" AS s0 ORDER BY s0."x", s0."y" DESC}
-
-    query = Schema |> order_by([r], [r.y]) |> distinct([r], r.x) |> select([r], r.x) |> normalize
-    assert SQL.all(query) == ~s{SELECT DISTINCT ON (s0."x") s0."x" FROM "schema" AS s0 ORDER BY s0."x", s0."y"}
 
     query = Schema |> order_by([r], []) |> select([r], r.x) |> normalize
     assert SQL.all(query) == ~s{SELECT s0."x" FROM "schema" AS s0}
@@ -281,6 +291,14 @@ defmodule Ecto.Adapters.PostgresTest do
 
     query = Schema |> having([p], p.x == p.x) |> having([p], p.y == p.y) |> select([], true) |> normalize
     assert SQL.all(query) == ~s{SELECT TRUE FROM "schema" AS s0 HAVING (s0."x" = s0."x") AND (s0."y" = s0."y")}
+  end
+
+  test "or_having" do
+    query = Schema |> or_having([p], p.x == p.x) |> select([], true) |> normalize
+    assert SQL.all(query) == ~s{SELECT TRUE FROM "schema" AS s0 HAVING (s0."x" = s0."x")}
+
+    query = Schema |> or_having([p], p.x == p.x) |> or_having([p], p.y == p.y) |> select([], true) |> normalize
+    assert SQL.all(query) == ~s{SELECT TRUE FROM "schema" AS s0 HAVING (s0."x" = s0."x") OR (s0."y" = s0."y")}
   end
 
   test "group by" do
@@ -470,17 +488,17 @@ defmodule Ecto.Adapters.PostgresTest do
   end
 
   test "join with subquery" do
-    posts = subquery("posts" |> where(title: ^"hello") |> select([r], {r.x, r.y}))
-
+    posts = subquery("posts" |> where(title: ^"hello") |> select([r], %{x: r.x, y: r.y}))
     query = "comments" |> join(:inner, [c], p in subquery(posts), true) |> select([_, p], p.x) |> normalize
     assert SQL.all(query) ==
            ~s{SELECT s1."x" FROM "comments" AS c0 } <>
-           ~s{INNER JOIN (SELECT p0."x", p0."y" FROM "posts" AS p0 WHERE (p0."title" = $1)) AS s1 ON TRUE}
+           ~s{INNER JOIN (SELECT p0."x" AS "x", p0."y" AS "y" FROM "posts" AS p0 WHERE (p0."title" = $1)) AS s1 ON TRUE}
 
+    posts = subquery("posts" |> where(title: ^"hello") |> select([r], %{x: r.x, z: r.y}))
     query = "comments" |> join(:inner, [c], p in subquery(posts), true) |> select([_, p], p) |> normalize
     assert SQL.all(query) ==
-           ~s{SELECT s1."x", s1."y" FROM "comments" AS c0 } <>
-           ~s{INNER JOIN (SELECT p0."x", p0."y" FROM "posts" AS p0 WHERE (p0."title" = $1)) AS s1 ON TRUE}
+           ~s{SELECT s1."x", s1."z" FROM "comments" AS c0 } <>
+           ~s{INNER JOIN (SELECT p0."x" AS "x", p0."y" AS "z" FROM "posts" AS p0 WHERE (p0."title" = $1)) AS s1 ON TRUE}
   end
 
   test "join with prefix" do
@@ -628,20 +646,6 @@ defmodule Ecto.Adapters.PostgresTest do
     """ |> remove_newlines
   end
 
-  test "create table with comment on columns and table" do
-    create = {:create, table(:posts, comment: "comment"),
-               [
-                 {:add, :category_0, references(:categories), [comment: "column comment"]},
-                 {:add, :created_at, :datetime, []},
-                 {:add, :updated_at, :datetime, [comment: "column comment 2"]}
-               ]}
-    assert SQL.execute_ddl(create) == """
-    CREATE TABLE "posts"
-    ("category_0" integer CONSTRAINT "posts_category_0_fkey" REFERENCES "categories"("id"), "created_at" timestamp, "updated_at" timestamp);
-    COMMENT ON TABLE "posts" IS 'comment'; COMMENT ON COLUMN "posts"."category_0" IS 'column comment'; COMMENT ON COLUMN "posts"."updated_at" IS 'column comment 2'
-    """ |> remove_newlines
-  end
-
   test "create table with references" do
     create = {:create, table(:posts),
                [{:add, :id, :serial, [primary_key: true]},
@@ -724,27 +728,6 @@ defmodule Ecto.Adapters.PostgresTest do
     """ |> remove_newlines
   end
 
-  test "alter table with comments on table and columns" do
-    alter = {:alter, table(:posts, comment: "table comment"),
-               [{:add, :title, :string, [default: "Untitled", size: 100, null: false, comment: "column comment"]},
-                {:modify, :price, :numeric, [precision: 8, scale: 2, null: true]},
-                {:modify, :permalink_id, references(:permalinks), [null: false, comment: "column comment"]},
-                {:remove, :summary}]}
-
-    assert SQL.execute_ddl(alter) == """
-    ALTER TABLE "posts"
-    ADD COLUMN "title" varchar(100) DEFAULT 'Untitled' NOT NULL,
-    ALTER COLUMN "price" TYPE numeric(8,2) ,
-    ALTER COLUMN "price" DROP NOT NULL,
-    ALTER COLUMN "permalink_id" TYPE integer ,
-    ADD CONSTRAINT "posts_permalink_id_fkey" FOREIGN KEY ("permalink_id") REFERENCES "permalinks"("id") ,
-    ALTER COLUMN "permalink_id" SET NOT NULL,
-    DROP COLUMN "summary"; COMMENT ON TABLE \"posts\" IS 'table comment';
-    COMMENT ON COLUMN \"posts\".\"title\" IS 'column comment';
-    COMMENT ON COLUMN \"posts\".\"permalink_id\" IS 'column comment'
-    """ |> remove_newlines
-  end
-
   test "alter table with prefix" do
     alter = {:alter, table(:posts, prefix: :foo),
                [{:add, :author_id, references(:author, prefix: :foo), []},
@@ -756,6 +739,17 @@ defmodule Ecto.Adapters.PostgresTest do
     ALTER COLUMN \"permalink_id\" TYPE integer ,
     ADD CONSTRAINT "posts_permalink_id_fkey" FOREIGN KEY ("permalink_id") REFERENCES "foo"."permalinks"("id") ,
     ALTER COLUMN "permalink_id" SET NOT NULL
+    """ |> remove_newlines
+  end
+
+  test "alter table with primary key" do
+    alter = {:alter, table(:posts),
+               [{:add, :my_pk, :serial, [primary_key: true]}]}
+
+    assert SQL.execute_ddl(alter) == """
+    ALTER TABLE "posts"
+    ADD COLUMN "my_pk" serial,
+    ADD PRIMARY KEY ("my_pk")
     """ |> remove_newlines
   end
 
@@ -777,14 +771,6 @@ defmodule Ecto.Adapters.PostgresTest do
     create = {:create, index(:posts, ["lower(permalink)"], name: "posts$main", prefix: :foo)}
     assert SQL.execute_ddl(create) ==
            ~s|CREATE INDEX "posts$main" ON "foo"."posts" (lower(permalink))|
-  end
-
-  test "create index with comment" do
-    create = {:create, index(:posts, [:category_id, :permalink], prefix: :foo, comment: "comment")}
-    assert SQL.execute_ddl(create) == """
-    CREATE INDEX "posts_category_id_permalink_index" ON "foo"."posts" ("category_id", "permalink")
-    ; COMMENT ON INDEX "posts_category_id_permalink_index" IS 'comment'
-    """ |> remove_newlines
   end
 
   test "create unique index" do
@@ -850,14 +836,6 @@ defmodule Ecto.Adapters.PostgresTest do
     create = {:create, constraint(:products, "price_must_be_positive", exclude: ~s|gist (int4range("from", "to", '[]') WITH &&)|)}
     assert SQL.execute_ddl(create) ==
            ~s|ALTER TABLE "products" ADD CONSTRAINT "price_must_be_positive" EXCLUDE USING gist (int4range("from", "to", '[]') WITH &&)|
-  end
-
-  test "create constraint with comment" do
-    create = {:create, constraint(:products, "price_must_be_positive", check: "price > 0", prefix: "foo", comment: "comment")}
-    assert SQL.execute_ddl(create) == """
-    ALTER TABLE "foo"."products" ADD CONSTRAINT "price_must_be_positive" CHECK (price > 0);
-    COMMENT ON CONSTRAINT "price_must_be_positive" IS 'comment'
-    """ |> remove_newlines
   end
 
   test "drop constraint" do

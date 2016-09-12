@@ -25,7 +25,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
 
   The first step is to configure your database to use the
   `Ecto.Adapters.SQL.Sandbox` pool. You set those options in your
-  `config/config.exs` (or preferrably `config/test.exs`) if you
+  `config/config.exs` (or preferably `config/test.exs`) if you
   haven't yet:
 
       config :my_app, Repo,
@@ -35,7 +35,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
   transactional tests:
 
       # At the end of your test_helper.exs
-      # Set the pool mode to manual for explicitly checkouts
+      # Set the pool mode to manual for explicit checkouts
       Ecto.Adapters.SQL.Sandbox.mode(Repo, :manual)
 
       defmodule PostTest do
@@ -221,18 +221,18 @@ defmodule Ecto.Adapters.SQL.Sandbox do
           ** (DBConnection.ConnectionError) owner #PID<> timed out
           because it owned the connection for longer than 15000ms
 
-  If you have a long running test, the timeout for the connection ownership may
+  If you have a long running test (or you're debugging with IEx.pry), the timeout for the connection ownership may
   be too short.  You can increase the timeout by setting the
-  `:ownership_timeout` options for your repo config:
+  `:ownership_timeout` options for your repo config in `config/config.exs` (or preferably in `config/test.exs`):
 
-      config :my_app, Repo,
+      config :my_app, MyApp.Repo,
         ownership_timeout: NEW_TIMEOUT_IN_MILLISECONDS
 
   The `:ownership_timeout` option is part of
   [`DBConnection.Ownership`](https://hexdocs.pm/db_connection/DBConnection.Ownership.html)
-  and defaults to 15000ms.
+  and defaults to 15000ms. Timeouts are given as integers in milliseconds.
 
-  ### Database deadlocks
+  ### Database locks and deadlocks
 
   Since the sandbox relies on concurrent transactional tests, there is
   a chance your tests may trigger deadlocks in your database. This is
@@ -240,8 +240,15 @@ defmodule Ecto.Adapters.SQL.Sandbox do
   enough to avoid deadlocks and thefore making the use of concurrent tests
   with MySQL prohibited.
 
-  However, even on databases like PostgreSQL, deadlocks can still occur.
-  For example, consider this scenario:
+  However, even on databases like PostgreSQL, performance degradations or
+  deadlocks may still occur. For example, imagine multiple tests are
+  trying to insert the same user to the database. They will attempt to
+  retrieve the same database lock, causing only one test to succeed and
+  run while all other tests wait for the lock.
+
+  In other situations, two different tests may proceed in a way that
+  each test retrieves locks desired by the other, leading to a situation
+  that cannot be resolved, a deadlock. For instance:
 
       Transaction 1:                Transaction 2:
       begin
@@ -252,7 +259,7 @@ defmodule Ecto.Adapters.SQL.Sandbox do
       update posts where id = 2
                             **deadlock**
 
-  There are different ways to avoid this problem. One of them is
+  There are different ways to avoid such problems. One of them is
   to make sure your tests work on distinct data. Regardless of
   your choice between using fixtures or factories for test data,
   make sure you get a new set of data per test. This is specially

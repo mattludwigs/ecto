@@ -65,7 +65,7 @@ defmodule Ecto.Query.Builder do
 
   def escape({:fragment, _, [{:^, _, [var]} = _expr]}, _type, params, _vars, _env) do
     expr = quote do
-      Ecto.Query.Builder.runtime_validate!(unquote(var))
+      Ecto.Query.Builder.keyword!(unquote(var))
     end
     {{:{}, [], [:fragment, [], [expr]]}, params}
   end
@@ -164,7 +164,7 @@ defmodule Ecto.Query.Builder do
     assert_type!(expr, type, :boolean)
 
     if is_nil(left) or is_nil(right) do
-      error! "comparison with nil is forbidden as it always evaluates to false. " <>
+      error! "comparison with nil is forbidden as it is unsafe. " <>
              "If you want to check if a value is nil, use is_nil/1 instead"
     end
 
@@ -173,7 +173,7 @@ defmodule Ecto.Query.Builder do
 
     {left,  params} = escape(left, ltype, params, vars, env)
     {right, params} = escape(right, rtype, params, vars, env)
-    {{:{}, [], [comp_op, [], [left, right]]}, params}
+    {{:{}, [], [comp_op, [], [left, right]]}, params |> wrap_nil(left) |> wrap_nil(right)}
   end
 
   # in operator
@@ -242,13 +242,15 @@ defmodule Ecto.Query.Builder do
     error! "`#{Macro.to_string(other)}` is not a valid query expression"
   end
 
-  def runtime_validate!(kw) do
-    unless Keyword.keyword?(kw) do
-      raise ArgumentError, "to prevent sql injection, only a keyword list may be interpolated " <>
-                           "as the first argument to `fragment/1` with the `^` operator, got `#{inspect kw}`"
-    end
-
-    kw
+  defp wrap_nil(params, {:{}, _, [:^, _, [ix]]}) do
+    Map.update!(params, ix, fn {val, type} ->
+      quote do
+        {Ecto.Query.Builder.not_nil!(unquote(val)), unquote(type)}
+      end
+    end)
+  end
+  defp wrap_nil(params, _other) do
+    params
   end
 
   defp split_binary(query), do: split_binary(query, "")
@@ -467,6 +469,17 @@ defmodule Ecto.Query.Builder do
     do: error!("expected atom in field/2, got: `#{inspect other}`")
 
   @doc """
+  Called by escaper at runtime to verify that a value is not nil.
+  """
+  def not_nil!(nil) do
+    raise ArgumentError, "comparison with nil is forbidden as it is unsafe. " <>
+                         "If you want to check if a value is nil, use is_nil/1 instead"
+  end
+  def not_nil!(not_nil) do
+    not_nil
+  end
+
+  @doc """
   Checks if the field is a valid interval at compilation time or
   delegate the check to runtime for interpolation.
   """
@@ -474,6 +487,18 @@ defmodule Ecto.Query.Builder do
     do: quote(do: Ecto.Query.Builder.interval!(unquote(expr)))
   def quoted_interval!(other),
     do: interval!(other)
+
+  @doc """
+  Called by escaper at runtime to verify keywords.
+  """
+  def keyword!(kw) do
+    unless Keyword.keyword?(kw) do
+      raise ArgumentError, "to prevent sql injection, only a keyword list may be interpolated " <>
+                           "as the first argument to `fragment/1` with the `^` operator, got `#{inspect kw}`"
+    end
+
+    kw
+  end
 
   @doc """
   Called by escaper at runtime to verify that value is an atom.
@@ -609,15 +634,15 @@ defmodule Ecto.Query.Builder do
   For this reason, the apply function should be ready to handle
   arguments in both escaped and unescaped form.
 
-  For example, take into account the `Builder.Select`:
+  For example, take into account the `Builder.OrderBy`:
 
       select = %Ecto.Query.QueryExpr{expr: expr, file: env.file, line: env.line}
-      Builder.apply_query(query, __MODULE__, [select], env)
+      Builder.apply_query(query, __MODULE__, [order_by], env)
 
   `expr` is already an escaped expression and we must not escape
   it again. However, it is wrapped in an Ecto.Query.QueryExpr,
   which must be escaped! Furthermore, the `apply/2` function
-  in `Builder.Select` very likely will inject the QueryExpr inside
+  in `Builder.OrderBy` very likely will inject the QueryExpr inside
   Query, which again, is a mixture of escaped and unescaped expressions.
 
   That said, you need to obey the following rules:
@@ -648,7 +673,6 @@ defmodule Ecto.Query.Builder do
   defp unescape_query({:%, _, [Query, {:%{}, _, list}]}) do
     struct(Query, list)
   end
-
   defp unescape_query({:%{}, _, list} = ast) do
     if List.keyfind(list, :__struct__, 0) == {:__struct__, Query} do
       Enum.into(list, %{})
@@ -656,7 +680,6 @@ defmodule Ecto.Query.Builder do
       ast
     end
   end
-
   defp unescape_query(other) do
     other
   end

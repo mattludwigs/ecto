@@ -126,6 +126,7 @@ defmodule Ecto.Repo do
         @adapter.in_transaction?(__MODULE__)
       end
 
+      @spec rollback(term) :: no_return
       def rollback(value) do
         @adapter.rollback(__MODULE__, value)
       end
@@ -332,7 +333,7 @@ defmodule Ecto.Repo do
   ## Examples
 
       # Returns the number of visits per blog post
-      Repo.aggregate(Post, :avg, :visits)
+      Repo.aggregate(Post, :count, :visits)
 
       # Returns the average number of visits for the top 10
       query = from Post, limit: 10
@@ -405,6 +406,10 @@ defmodule Ecto.Repo do
 
   ## Options
 
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the query.
+
   See the "Shared options" section at the module documentation.
 
   ## Example
@@ -419,10 +424,10 @@ defmodule Ecto.Repo do
   @doc """
   Inserts all entries into the repository.
 
-  It expects a schema (`MyApp.User`) or a source (`"users"` or
-  `{"prefix", "users"}`) as the first argument. The second argument
-  is a list of entries to be inserted, either as keyword lists
-  or as maps.
+  It expects a schema (`MyApp.User`) or a source (`"users"`) or
+  both (`{"users", MyApp.User}`) as the first argument. The second
+  argument is a list of entries to be inserted, either as keyword
+  lists or as maps.
 
   It returns a tuple containing the number of entries
   and any returned result as second element. If the database
@@ -449,11 +454,13 @@ defmodule Ecto.Repo do
       fields, where a struct is still returned but only with the
       given fields. Or `false`, where nothing is returned (the default).
       This option is not supported by all databases.
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL).
 
   See the "Shared options" section at the module documentation for
   remaining options.
   """
-  @callback insert_all(schema_or_source :: binary | {binary | nil, binary} | Ecto.Schema.t,
+  @callback insert_all(schema_or_source :: binary | {binary, Ecto.Schema.t} | Ecto.Schema.t,
                        entries :: [map | Keyword.t], opts :: Keyword.t) :: {integer, nil | [term]} | no_return
 
   @doc """
@@ -477,6 +484,9 @@ defmodule Ecto.Repo do
       fields, where a struct is still returned but only with the
       given fields. Or `false`, where nothing is returned (the default).
       This option is not supported by all databases.
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the query.
 
   See the "Shared options" section at the module documentation for
   remaining options.
@@ -514,6 +524,9 @@ defmodule Ecto.Repo do
       fields, where a struct is still returned but only with the
       given fields. Or `false`, where nothing is returned (the default).
       This option is not supported by all databases.
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the query.
 
   See the "Shared options" section at the module documentation for
   remaining options.
@@ -543,6 +556,10 @@ defmodule Ecto.Repo do
 
   ## Options
 
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the struct.
+
   See the "Shared options" section at the module documentation.
 
   ## Example
@@ -553,8 +570,8 @@ defmodule Ecto.Repo do
       end
 
   """
-  @callback insert(struct :: Ecto.Schema.t | Ecto.Changeset.t, opts :: Keyword.t) ::
-              {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
+  @callback insert(struct_or_changeset :: Ecto.Schema.t | Ecto.Changeset.t, opts :: Keyword.t) ::
+            {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
 
   @doc """
   Updates a changeset using its primary key.
@@ -578,6 +595,9 @@ defmodule Ecto.Repo do
       `update!/2` is a no-op. By setting this option to true, update
       callbacks will always be executed, even if there are no changes
       (including timestamps).
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the struct.
 
   ## Example
 
@@ -588,8 +608,8 @@ defmodule Ecto.Repo do
         {:error, changeset} -> # Something went wrong
       end
   """
-  @callback update(struct :: Ecto.Changeset.t, opts :: Keyword.t) ::
-              {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
+  @callback update(changeset :: Ecto.Changeset.t, opts :: Keyword.t) ::
+            {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
 
   @doc """
   Inserts or updates a changeset depending on whether the struct is persisted
@@ -607,6 +627,10 @@ defmodule Ecto.Repo do
       # => {:error, "id already exists"}
 
   ## Options
+
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the struct.
 
   See the "Shared options" section at the module documentation.
 
@@ -626,7 +650,7 @@ defmodule Ecto.Repo do
       end
   """
   @callback insert_or_update(changeset :: Ecto.Changeset.t, opts :: Keyword.t) ::
-              {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
+            {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
 
   @doc """
   Deletes a struct using its primary key.
@@ -640,6 +664,10 @@ defmodule Ecto.Repo do
 
   ## Options
 
+    * `:prefix` - The prefix to run the query on (such as the schema path
+      in Postgres or the database in MySQL). This overrides the prefix set
+      in the struct.
+
   See the "Shared options" section at the module documentation.
 
   ## Example
@@ -651,30 +679,33 @@ defmodule Ecto.Repo do
       end
 
   """
-  @callback delete(struct :: Ecto.Schema.t, opts :: Keyword.t) ::
-              {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
+  @callback delete(struct_or_changeset :: Ecto.Schema.t | Ecto.Changeset.t, opts :: Keyword.t) ::
+            {:ok, Ecto.Schema.t} | {:error, Ecto.Changeset.t}
 
   @doc """
   Same as `insert/2` but returns the struct or raises if the changeset is invalid.
   """
-  @callback insert!(struct :: Ecto.Schema.t, opts :: Keyword.t) :: Ecto.Schema.t | no_return
+  @callback insert!(struct_or_changeset :: Ecto.Schema.t | Ecto.Changeset.t, opts :: Keyword.t) ::
+            Ecto.Schema.t | no_return
 
   @doc """
   Same as `update/2` but returns the struct or raises if the changeset is invalid.
   """
-  @callback update!(struct :: Ecto.Schema.t, opts :: Keyword.t) :: Ecto.Schema.t | no_return
+  @callback update!(changeset :: Ecto.Changeset.t, opts :: Keyword.t) ::
+            Ecto.Schema.t | no_return
 
   @doc """
   Same as `insert_or_update/2` but returns the struct or raises if the changeset
   is invalid.
   """
   @callback insert_or_update!(changeset :: Ecto.Changeset.t, opts :: Keyword.t) ::
-              Ecto.Schema.t | no_return
+            Ecto.Schema.t | no_return
 
   @doc """
   Same as `delete/2` but returns the struct or raises if the changeset is invalid.
   """
-  @callback delete!(struct :: Ecto.Schema.t, opts :: Keyword.t) :: Ecto.Schema.t | no_return
+  @callback delete!(struct_or_changeset :: Ecto.Schema.t | Ecto.Changeset.t, opts :: Keyword.t) ::
+            Ecto.Schema.t | no_return
 
   @doc """
   Runs the given function or `Ecto.Multi` inside a transaction.

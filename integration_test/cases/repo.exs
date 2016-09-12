@@ -49,6 +49,11 @@ defmodule Ecto.Integration.RepoTest do
       TestRepo.all(from(p in "posts", where: p.title == "title1", select: p.id))
   end
 
+  @tag :invalid_prefix
+  test "fetch with invalid prefix" do
+    assert catch_error(TestRepo.all("posts", prefix: "oops"))
+  end
+
   test "insert, update and delete" do
     post = %Post{title: "insert, update, delete", text: "fetch empty"}
     meta = post.__meta__
@@ -96,6 +101,15 @@ defmodule Ecto.Integration.RepoTest do
     assert TestRepo.get_by!(PostUserCompositePk, [user_id: user.id, post_id: post.id]) == user_post
     TestRepo.delete!(user_post)
     assert TestRepo.all(PostUserCompositePk) == []
+  end
+
+  @tag :invalid_prefix
+  test "insert, update and delete with invalid prefix" do
+    post = TestRepo.insert!(%Post{})
+    changeset = Ecto.Changeset.change(post, title: "foo")
+    assert catch_error(TestRepo.insert(%Post{}, prefix: "oops"))
+    assert catch_error(TestRepo.update(changeset, prefix: "oops"))
+    assert catch_error(TestRepo.delete(changeset, prefix: "oops"))
   end
 
   test "insert and update with changeset" do
@@ -277,6 +291,60 @@ defmodule Ecto.Integration.RepoTest do
     assert changeset.data.__meta__.state == :built
   end
 
+  @tag :unique_constraint
+  test "unique constraint violation error message with join table in single changeset" do
+    post =
+      TestRepo.insert!(%Post{title: "some post"})
+      |> TestRepo.preload(:unique_users)
+
+    user =
+      TestRepo.insert!(%User{name: "some user"})
+
+    # Violate the unique composite index
+    {:error, changeset} =
+      post
+      |> Ecto.Changeset.change
+      |> Ecto.Changeset.put_assoc(:unique_users, [user, user])
+      |> Ecto.Changeset.unique_constraint(:user,
+          name: :posts_users_composite_pk_post_id_user_id_index,
+          message: "has already been assigned")
+      |> TestRepo.update
+
+    errors = Ecto.Changeset.traverse_errors(changeset, fn {msg, _opts} -> msg end)
+    assert errors == %{unique_users: [%{}, %{user: ["has already been assigned"]}]}
+
+    refute changeset.valid?
+  end
+
+  @tag :unique_constraint
+  test "unique constraint violation error message with join table and separate changesets" do
+    post =
+      TestRepo.insert!(%Post{title: "some post"})
+      |> TestRepo.preload(:unique_users)
+
+    user = TestRepo.insert!(%User{name: "some user"})
+
+    post
+    |> Ecto.Changeset.change
+    |> Ecto.Changeset.put_assoc(:unique_users, [user])
+    |> TestRepo.update
+
+    # Violate the unique composite index
+    {:error, changeset} =
+      post
+      |> Ecto.Changeset.change
+      |> Ecto.Changeset.put_assoc(:unique_users, [user])
+      |> Ecto.Changeset.unique_constraint(:user,
+          name: :posts_users_composite_pk_post_id_user_id_index,
+          message: "has already been assigned")
+      |> TestRepo.update
+
+    errors = Ecto.Changeset.traverse_errors(changeset, fn {msg, _opts} -> msg end)
+    assert errors == %{unique_users: [%{user: ["has already been assigned"]}]}
+
+    refute changeset.valid?
+  end
+
   @tag :foreign_key_constraint
   test "foreign key constraint" do
     changeset = Ecto.Changeset.change(%Comment{post_id: 0})
@@ -381,6 +449,54 @@ defmodule Ecto.Integration.RepoTest do
     assert changeset.errors == [permalink: {"is still associated to this entry", []}]
   end
 
+  test "insert and update with failing child foreign key" do
+    defmodule Order do
+      use Ecto.Integration.Schema
+      import Ecto.Changeset
+
+      schema "orders" do
+        embeds_one :item, Ecto.Integration.Item
+        belongs_to :comment, Ecto.Integration.Comment
+      end
+
+      def changeset(order, params) do
+        order
+        |> cast(params, [:comment_id])
+        |> cast_embed(:item, with: &item_changeset/2)
+        |> cast_assoc(:comment, with: &comment_changeset/2)
+      end
+
+      def item_changeset(item, params) do
+        item
+        |> cast(params, [:price])
+      end
+
+      def comment_changeset(comment, params) do
+        comment
+        |> cast(params, [:post_id, :text])
+        |> cast_assoc(:post)
+        |> assoc_constraint(:post)
+      end
+    end
+
+    changeset = Order.changeset(struct(Order, %{}), %{item: %{price: 10}, comment: %{text: "1", post_id: 0}})
+
+    assert %Ecto.Changeset{} = changeset.changes.item
+
+    {:error, changeset} = TestRepo.insert(changeset)
+    assert %Ecto.Changeset{} = changeset.changes.item
+
+    order = TestRepo.insert!(Order.changeset(struct(Order, %{}), %{}))
+    |> TestRepo.preload([:comment])
+
+    changeset = Order.changeset(order, %{item: %{price: 10}, comment: %{text: "1", post_id: 0}})
+
+    assert %Ecto.Changeset{} = changeset.changes.item
+
+    {:error, changeset} = TestRepo.update(changeset)
+    assert %Ecto.Changeset{} = changeset.changes.item
+  end
+
   test "get(!)" do
     post1 = TestRepo.insert!(%Post{title: "1", text: "hai"})
     post2 = TestRepo.insert!(%Post{title: "2", text: "hai"})
@@ -482,7 +598,7 @@ defmodule Ecto.Integration.RepoTest do
 
   test "insert all" do
     assert {2, nil} = TestRepo.insert_all("comments", [[text: "1"], %{text: "2", lock_version: 2}])
-    assert {2, nil} = TestRepo.insert_all({nil, "comments"}, [[text: "3"], %{text: "4", lock_version: 2}])
+    assert {2, nil} = TestRepo.insert_all({"comments", Comment}, [[text: "3"], %{text: "4", lock_version: 2}])
     assert [%Comment{text: "1", lock_version: 1},
             %Comment{text: "2", lock_version: 2},
             %Comment{text: "3", lock_version: 1},
@@ -492,7 +608,12 @@ defmodule Ecto.Integration.RepoTest do
     assert [%Post{}, %Post{}] = TestRepo.all(Post)
 
     assert {0, nil} = TestRepo.insert_all("posts", [])
-    assert {0, nil} = TestRepo.insert_all({nil, "posts"}, [])
+    assert {0, nil} = TestRepo.insert_all({"posts", Post}, [])
+  end
+
+  @tag :invalid_prefix
+  test "insert all with invalid prefix" do
+    assert catch_error(TestRepo.insert_all(Post, [[], []], prefix: "oops"))
   end
 
   @tag :returning
@@ -559,6 +680,11 @@ defmodule Ecto.Integration.RepoTest do
     assert %Post{title: nil} = TestRepo.get(Post, id1)
     assert %Post{title: nil} = TestRepo.get(Post, id2)
     assert %Post{title: nil} = TestRepo.get(Post, id3)
+  end
+
+  @tag :invalid_prefix
+  test "update all with invalid prefix" do
+    assert catch_error(TestRepo.update_all(Post, [set: [title: "x"]], prefix: "oops"))
   end
 
   @tag :returning
@@ -665,6 +791,11 @@ defmodule Ecto.Integration.RepoTest do
 
     assert {3, nil} = TestRepo.delete_all(Post, returning: false)
     assert [] = TestRepo.all(Post)
+  end
+
+  @tag :invalid_prefix
+  test "delete all with invalid prefix" do
+    assert catch_error(TestRepo.delete_all(Post, prefix: "oops"))
   end
 
   @tag :returning

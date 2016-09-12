@@ -39,11 +39,15 @@ defmodule Ecto.MigrationTest do
   test "creates an index" do
     assert index(:posts, [:title]) ==
            %Index{table: :posts, unique: false, name: :posts_title_index, columns: [:title]}
+    assert index(:posts, :title) ==
+           %Index{table: :posts, unique: false, name: :posts_title_index, columns: [:title]}
     assert index(:posts, ["lower(title)"]) ==
            %Index{table: :posts, unique: false, name: :posts_lower_title_index, columns: ["lower(title)"]}
     assert index(:posts, [:title], name: :foo, unique: true) ==
            %Index{table: :posts, unique: true, name: :foo, columns: [:title]}
     assert unique_index(:posts, [:title], name: :foo) ==
+           %Index{table: :posts, unique: true, name: :foo, columns: [:title]}
+    assert unique_index(:posts, :title, name: :foo) ==
            %Index{table: :posts, unique: true, name: :foo, columns: [:title]}
   end
 
@@ -120,6 +124,38 @@ defmodule Ecto.MigrationTest do
     assert last_command() ==
            {:create, table,
               [{:add, :title, :string, []}]}
+  end
+
+  test "forward: creates a table without updated_at timestamp" do
+    create table = table(:posts, primary_key: false) do
+      timestamps(inserted_at: :created_at, updated_at: false)
+    end
+    flush()
+
+    assert last_command() ==
+           {:create, table,
+              [{:add, :created_at, :datetime, [null: false]}]}
+  end
+
+  test "forward: creates a table with timestamps of type date" do
+    create table = table(:posts, primary_key: false) do
+      timestamps(inserted_at: :inserted_on, updated_at: :updated_on, type: :date)
+    end
+    flush()
+
+    assert last_command() ==
+           {:create, table,
+              [{:add, :inserted_on, :date, [null: false]},
+               {:add, :updated_on, :date, [null: false]}]}
+  end
+
+  test "forward: raises on invalid timestamps type" do
+    assert_raise ArgumentError, "unknown :type value: :time", fn ->
+      create table(:posts, primary_key: false) do
+        timestamps(type: :time)
+      end
+      flush()
+    end
   end
 
   test "forward: creates an empty table" do

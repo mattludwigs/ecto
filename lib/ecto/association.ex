@@ -313,6 +313,7 @@ defmodule Ecto.Association.Has do
   @behaviour Ecto.Association
   @on_delete_opts [:nothing, :nilify_all, :delete_all]
   @on_replace_opts [:raise, :mark_as_invalid, :delete, :nilify]
+  @has_one_on_replace_opts [:update]
   defstruct [:cardinality, :field, :owner, :related, :owner_key, :related_key, :on_cast,
              :queryable, :on_delete, :on_replace, defaults: [], relationship: :child]
 
@@ -335,6 +336,7 @@ defmodule Ecto.Association.Has do
     end
 
     queryable = Keyword.fetch!(opts, :queryable)
+    cardinality = Keyword.fetch!(opts, :cardinality)
     related = Ecto.Association.related_from_query(queryable)
 
     if opts[:through] do
@@ -343,15 +345,20 @@ defmodule Ecto.Association.Has do
     end
 
     on_delete  = Keyword.get(opts, :on_delete, :nothing)
-    on_replace = Keyword.get(opts, :on_replace, :raise)
-
     unless on_delete in @on_delete_opts do
       raise ArgumentError, "invalid :on_delete option for #{inspect name}. " <>
         "The only valid options are: " <>
         Enum.map_join(@on_delete_opts, ", ", &"`#{inspect &1}`")
     end
 
-    unless on_replace in @on_replace_opts do
+    on_replace = Keyword.get(opts, :on_replace, :raise)
+    on_replace_opts = if cardinality == :one do
+      @on_replace_opts ++ @has_one_on_replace_opts
+    else
+      @on_replace_opts
+    end
+
+    unless on_replace in on_replace_opts do
       raise ArgumentError, "invalid `:on_replace` option for #{inspect name}. " <>
         "The only valid options are: " <>
         Enum.map_join(@on_replace_opts, ", ", &"`#{inspect &1}`")
@@ -359,7 +366,7 @@ defmodule Ecto.Association.Has do
 
     %__MODULE__{
       field: name,
-      cardinality: Keyword.fetch!(opts, :cardinality),
+      cardinality: cardinality,
       owner: module,
       related: related,
       owner_key: ref,
@@ -385,6 +392,12 @@ defmodule Ecto.Association.Has do
     from o in owner,
       join: q in ^queryable,
       on: field(q, ^related_key) == field(o, ^owner_key)
+  end
+
+  @doc false
+  def assoc_query(%{queryable: queryable, related_key: related_key}, query, [value]) do
+    from x in (query || queryable),
+      where: field(x, ^related_key) == ^value
   end
 
   @doc false
@@ -488,7 +501,7 @@ defmodule Ecto.Association.HasThrough do
     * `relationship` - The relationship to the specified schema, default `:child`
   """
 
-  alias Ecto.Query.JoinExpr
+  alias Ecto.Query.{BooleanExpr, JoinExpr, QueryExpr}
 
   @behaviour Ecto.Association
   defstruct [:cardinality, :field, :owner, :owner_key, :through, :on_cast,
@@ -593,15 +606,21 @@ defmodule Ecto.Association.HasThrough do
     rewrite_ix = assoc.ix
     [assoc|joins] = Enum.map([assoc|joins], &rewrite_join(&1, rewrite_ix))
 
-    %{query | wheres: [assoc.on|query.wheres], joins: joins,
+    %{query | wheres: [assoc_to_where(assoc)|query.wheres], joins: joins,
               from: merge_from(query.from, assoc.source), sources: nil}
     |> distinct([x], true)
   end
 
+  defp assoc_to_where(%{on: %QueryExpr{} = on}) do
+    on
+    |> Map.put(:__struct__, BooleanExpr)
+    |> Map.put(:op, :and)
+  end
+
   defp assoc_to_join(%{from: from, wheres: [on], order_bys: [], joins: joins}, position) do
     last = length(joins) + position
-    join = %JoinExpr{qual: :inner, source: from,
-                     on: on, file: on.file, line: on.line}
+    join = %JoinExpr{qual: :inner, source: from, file: on.file, line: on.line,
+                     on: on |> Map.put(:__struct__, QueryExpr) |> Map.delete(:op)}
 
     mapping = fn
       0  -> last
@@ -672,7 +691,7 @@ defmodule Ecto.Association.BelongsTo do
   """
 
   @behaviour Ecto.Association
-  @on_replace_opts [:raise, :mark_as_invalid, :delete, :nilify]
+  @on_replace_opts [:raise, :mark_as_invalid, :delete, :nilify, :update]
   defstruct [:field, :owner, :related, :owner_key, :related_key, :queryable, :on_cast,
              :on_replace, defaults: [], cardinality: :one, relationship: :parent]
 
@@ -719,6 +738,12 @@ defmodule Ecto.Association.BelongsTo do
     from o in owner,
       join: q in ^queryable,
       on: field(q, ^related_key) == field(o, ^owner_key)
+  end
+
+  @doc false
+  def assoc_query(%{queryable: queryable, related_key: related_key}, query, [value]) do
+    from x in (query || queryable),
+      where: field(x, ^related_key) == ^value
   end
 
   @doc false
@@ -926,7 +951,7 @@ defmodule Ecto.Association.ManyToMany do
   end
 
   def on_repo_change(%{field: field, join_through: join_through, join_keys: join_keys},
-                     %{repo: repo, data: owner} = parent_changeset,
+                     %{repo: repo, data: owner, constraints: constraints} = parent_changeset,
                      %{action: action} = changeset, opts) do
     case apply(repo, action, [changeset, opts]) do
       {:ok, related} ->
@@ -937,9 +962,17 @@ defmodule Ecto.Association.ManyToMany do
           related_value = dump! :insert, join_through, related, related_key, adapter
 
           data = [{join_owner_key, owner_value}, {join_related_key, related_value}]
-          insert_join(repo, join_through, data, opts)
+
+          case insert_join(repo, join_through, data, opts, constraints) do
+            {:error, join_changeset} ->
+              {:error, %{changeset | errors: join_changeset.errors ++ changeset.errors,
+                                     valid?: join_changeset.valid? and changeset.valid?}}
+            _ ->
+              {:ok, related}
+          end
+        else
+          {:ok, related}
         end
-        {:ok, related}
       {:error, changeset} ->
         {:error, changeset}
     end
@@ -954,12 +987,15 @@ defmodule Ecto.Association.ManyToMany do
     end
   end
 
-  defp insert_join(repo, join_through, data, opts) when is_binary(join_through) do
+  defp insert_join(repo, join_through, data, opts, _constraints) when is_binary(join_through) do
     repo.insert_all join_through, [data], opts
   end
 
-  defp insert_join(repo, join_through, data, opts) when is_atom(join_through) do
-    repo.insert! struct(join_through, data), opts
+  defp insert_join(repo, join_through, data, opts, constraints) when is_atom(join_through) do
+    struct(join_through, data)
+    |> Ecto.Changeset.change
+    |> Map.put(:constraints, constraints)
+    |> repo.insert(opts)
   end
 
   defp field!(op, struct, field) do

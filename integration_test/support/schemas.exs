@@ -49,9 +49,12 @@ defmodule Ecto.Integration.Post do
     many_to_many :customs, Ecto.Integration.Custom,
       join_through: "posts_customs", join_keys: [post_id: :uuid, custom_id: :bid],
       on_delete: :delete_all, on_replace: :delete
+    many_to_many :unique_users, Ecto.Integration.User,
+      join_through: Ecto.Integration.PostUserCompositePk
     has_many :users_comments, through: [:users, :comments]
     has_many :comments_authors_permalinks, through: [:comments_authors, :permalink]
     timestamps()
+    has_one :post_user_composite_pk, Ecto.Integration.PostUserCompositePk
   end
 
   def changeset(schema, params) do
@@ -92,6 +95,10 @@ defmodule Ecto.Integration.Comment do
     belongs_to :post, Ecto.Integration.Post
     belongs_to :author, Ecto.Integration.User
     has_one :post_permalink, through: [:post, :permalink]
+  end
+
+  def changeset(schema, params) do
+    Ecto.Changeset.cast(schema, params, [:text])
   end
 end
 
@@ -147,6 +154,7 @@ defmodule Ecto.Integration.User do
     has_many :posts, Ecto.Integration.Post, foreign_key: :author_id, on_delete: :nothing, on_replace: :delete
     belongs_to :custom, Ecto.Integration.Custom, references: :bid, type: :binary_id
     many_to_many :schema_posts, Ecto.Integration.Post, join_through: Ecto.Integration.PostUser
+    many_to_many :unique_posts, Ecto.Integration.Post, join_through: Ecto.Integration.PostUserCompositePk
     timestamps()
   end
 end
